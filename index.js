@@ -131,7 +131,7 @@ function qs(params) {
 
 /* ─── Server ─── */
 
-const server = new McpServer({ name: "zentavo", version: "1.1.0" });
+const server = new McpServer({ name: "zentavo", version: "1.2.0" });
 
 server.registerTool(
   "list_plans",
@@ -266,6 +266,28 @@ server.registerTool(
   async ({ plan, amount, ...rest }) => {
     try {
       return ok(await api(resolveKey(plan), "POST", "/transactions", { ...rest, amount: toMilli(amount) }));
+    } catch (e) { return fail(e); }
+  }
+);
+
+server.registerTool(
+  "create_loan",
+  {
+    title: "Registrar préstamo",
+    description:
+      "Registra un préstamo a/de una persona. Crea (o reutiliza) una cuenta de préstamo para ese contacto y hace la transferencia inicial en un paso. direction 'lend' = tú prestas (sale dinero de tu cuenta), 'borrow' = te pagan o registras un cobro (entra a tu cuenta). El monto va en la moneda de la cuenta, ej. 500, se convierte solo.",
+    inputSchema: {
+      contactName: z.string().describe("Nombre de la persona, ej. Juan"),
+      direction: z.enum(["lend", "borrow"]).describe("'lend' prestas tú, 'borrow' te pagan/cobras"),
+      accountId: z.string().describe("Tu cuenta on-budget de donde sale o entra el dinero"),
+      amount: z.number().positive().describe("Monto en la moneda de la cuenta, ej. 500"),
+      note: z.string().optional(),
+      ...planParam,
+    },
+  },
+  async ({ plan, amount, ...rest }) => {
+    try {
+      return ok(await api(resolveKey(plan), "POST", "/loans", { ...rest, amount: toMilli(amount) }));
     } catch (e) { return fail(e); }
   }
 );
