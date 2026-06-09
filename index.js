@@ -6,16 +6,20 @@
  * itself: the host (Claude Desktop, Cursor, ChatGPT, etc.) calls these tools
  * with the user's own model, so token cost is on the user, not on Zentavo.
  *
- * Auth: set ZENTAVO_API_KEY (generated in the app at Configuración → API).
- * The key is bound to one plan, so the plan is resolved automatically.
+ * Auth — two ways:
+ *   - Single plan:  ZENTAVO_API_KEY=zsk_live_...
+ *   - Many plans:   ZENTAVO_PLANS='[{"name":"personal","key":"zsk_..."},
+ *                                    {"name":"negocio","key":"zsk_..."}]'
+ * Each key is bound to one plan (generated at Configuración → API). With
+ * several plans, pass `plan` on each tool (use list_plans to see the names).
  *
- * Usage in a host config:
+ * Example host config:
  *   {
  *     "mcpServers": {
  *       "zentavo": {
  *         "command": "npx",
- *         "args": ["-y", "@zentavo/mcp"],
- *         "env": { "ZENTAVO_API_KEY": "zsk_live_..." }
+ *         "args": ["-y", "github:magiobus/zentavomcp"],
+ *         "env": { "ZENTAVO_PLANS": "[{\"name\":\"personal\",\"key\":\"zsk_live_...\"}]" }
  *       }
  *     }
  *   }
@@ -25,21 +29,72 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const API_KEY = process.env.ZENTAVO_API_KEY;
 const BASE_URL = (process.env.ZENTAVO_BASE_URL || "https://zentavo.lat/api/v1").replace(/\/$/, "");
 
-if (!API_KEY) {
-  console.error("ZENTAVO_API_KEY no está definida. Genera una key en Configuración → API y pásala en el env del MCP.");
+/* ─── Plan resolution from env ─── */
+
+function loadPlans() {
+  const raw = process.env.ZENTAVO_PLANS;
+  if (raw) {
+    let arr;
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      console.error('ZENTAVO_PLANS no es JSON válido. Esperado: [{"name":"personal","key":"zsk_..."}]');
+      process.exit(1);
+    }
+    if (!Array.isArray(arr) || arr.length === 0) {
+      console.error("ZENTAVO_PLANS debe ser un arreglo con al menos un plan.");
+      process.exit(1);
+    }
+    const map = {};
+    for (const p of arr) {
+      if (!p?.name || !p?.key) {
+        console.error('Cada plan en ZENTAVO_PLANS necesita "name" y "key".');
+        process.exit(1);
+      }
+      map[p.name] = p.key;
+    }
+    return map;
+  }
+  if (process.env.ZENTAVO_API_KEY) {
+    return { default: process.env.ZENTAVO_API_KEY };
+  }
+  console.error("Falta auth: define ZENTAVO_API_KEY (un plan) o ZENTAVO_PLANS (varios). Genera keys en Configuración → API.");
   process.exit(1);
 }
 
+const PLANS = loadPlans();
+const PLAN_NAMES = Object.keys(PLANS);
+const MULTI = PLAN_NAMES.length > 1;
+
+// Resolve the API key for a request. With one plan, `plan` is ignored.
+// With several, `plan` is required and must match a configured name.
+function resolveKey(plan) {
+  if (!MULTI) return PLANS[PLAN_NAMES[0]];
+  if (!plan) {
+    throw new Error(`Manejas varios planes (${PLAN_NAMES.join(", ")}). Pasa 'plan' en la herramienta — usa list_plans para verlos.`);
+  }
+  const key = PLANS[plan];
+  if (!key) throw new Error(`Plan "${plan}" no existe. Disponibles: ${PLAN_NAMES.join(", ")}.`);
+  return key;
+}
+
+// `plan` param, added to every data tool. Only meaningful when MULTI.
+const planParam = {
+  plan: z
+    .string()
+    .optional()
+    .describe(MULTI ? `Plan a usar: ${PLAN_NAMES.join(", ")}` : "Plan (solo tienes uno; opcional)"),
+};
+
 /* ─── API helper ─── */
 
-async function api(method, path, body) {
+async function api(key, method, path, body) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${API_KEY}`,
+      Authorization: `Bearer ${key}`,
       ...(body ? { "Content-Type": "application/json" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -54,20 +109,17 @@ async function api(method, path, body) {
   }
 
   if (!res.ok) {
-    const msg = data?.error || `HTTP ${res.status}`;
-    throw new Error(msg);
+    throw new Error(data?.error || `HTTP ${res.status}`);
   }
   return data;
 }
 
-// Money is stored in milliunits (1000 = $1.00). The tools accept decimal
-// amounts in the account's currency (e.g. 45.50) and convert at the boundary.
+// Money is milliunits (1000 = $1.00). Tools take decimal amounts and convert.
 const toMilli = (n) => Math.round(Number(n) * 1000);
 
 const ok = (data) => ({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
 const fail = (e) => ({ content: [{ type: "text", text: `Error: ${e.message || e}` }], isError: true });
 
-/* ─── Query-string builder (drops undefined) ─── */
 function qs(params) {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -79,7 +131,17 @@ function qs(params) {
 
 /* ─── Server ─── */
 
-const server = new McpServer({ name: "zentavo", version: "1.0.0" });
+const server = new McpServer({ name: "zentavo", version: "1.1.0" });
+
+server.registerTool(
+  "list_plans",
+  {
+    title: "Listar planes",
+    description: "Lista los planes disponibles en esta conexión. Si hay más de uno, pasa el nombre en el parámetro 'plan' de las demás herramientas.",
+    inputSchema: {},
+  },
+  async () => ok({ plans: PLAN_NAMES, multi: MULTI })
+);
 
 /* ── Lectura ── */
 
@@ -88,11 +150,11 @@ server.registerTool(
   {
     title: "Listar cuentas",
     description: "Lista las cuentas del plan (bancos, efectivo, tarjetas, inversiones, préstamos) con su tipo y moneda.",
-    inputSchema: { includeArchived: z.boolean().optional().describe("Incluir cuentas archivadas") },
+    inputSchema: { includeArchived: z.boolean().optional().describe("Incluir cuentas archivadas"), ...planParam },
   },
-  async ({ includeArchived }) => {
+  async ({ plan, includeArchived }) => {
     try {
-      return ok(await api("GET", `/accounts${qs({ includeArchived })}`));
+      return ok(await api(resolveKey(plan), "GET", `/accounts${qs({ includeArchived })}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -110,11 +172,12 @@ server.registerTool(
       type: z.enum(["expense", "income", "transfer"]).optional(),
       search: z.string().optional().describe("Busca en negocio/nota (mín. 2 caracteres)"),
       limit: z.number().int().optional().describe("Default 100, máximo 500"),
+      ...planParam,
     },
   },
-  async (args) => {
+  async ({ plan, ...args }) => {
     try {
-      return ok(await api("GET", `/transactions${qs(args)}`));
+      return ok(await api(resolveKey(plan), "GET", `/transactions${qs(args)}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -124,11 +187,11 @@ server.registerTool(
   {
     title: "Obtener una transacción",
     description: "Obtiene una transacción por su id.",
-    inputSchema: { id: z.string() },
+    inputSchema: { id: z.string(), ...planParam },
   },
-  async ({ id }) => {
+  async ({ plan, id }) => {
     try {
-      return ok(await api("GET", `/transactions/${id}`));
+      return ok(await api(resolveKey(plan), "GET", `/transactions/${id}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -138,11 +201,11 @@ server.registerTool(
   {
     title: "Listar categorías",
     description: "Lista las categorías de gasto del plan.",
-    inputSchema: { includeArchived: z.boolean().optional() },
+    inputSchema: { includeArchived: z.boolean().optional(), ...planParam },
   },
-  async ({ includeArchived }) => {
+  async ({ plan, includeArchived }) => {
     try {
-      return ok(await api("GET", `/categories${qs({ includeArchived })}`));
+      return ok(await api(resolveKey(plan), "GET", `/categories${qs({ includeArchived })}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -152,11 +215,11 @@ server.registerTool(
   {
     title: "Listar presupuestos del mes",
     description: "Lista las asignaciones de presupuesto por categoría de un mes.",
-    inputSchema: { month: z.string().optional().describe("Mes YYYY-MM (default: mes actual)") },
+    inputSchema: { month: z.string().optional().describe("Mes YYYY-MM (default: mes actual)"), ...planParam },
   },
-  async ({ month }) => {
+  async ({ plan, month }) => {
     try {
-      return ok(await api("GET", `/budgets${qs({ month })}`));
+      return ok(await api(resolveKey(plan), "GET", `/budgets${qs({ month })}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -170,11 +233,12 @@ server.registerTool(
       month: z.string().optional().describe("Mes YYYY-MM, o 'all'. Default: mes actual"),
       to: z.string().optional(),
       accountIds: z.string().optional().describe("IDs de cuenta separados por coma"),
+      ...planParam,
     },
   },
-  async (args) => {
+  async ({ plan, ...args }) => {
     try {
-      return ok(await api("GET", `/summary${qs(args)}`));
+      return ok(await api(resolveKey(plan), "GET", `/summary${qs(args)}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -196,11 +260,12 @@ server.registerTool(
       payee: z.string().optional().describe("Negocio o quién pagó"),
       note: z.string().optional(),
       date: z.string().optional().describe("Fecha YYYY-MM-DD (default: hoy)"),
+      ...planParam,
     },
   },
-  async ({ amount, ...rest }) => {
+  async ({ plan, amount, ...rest }) => {
     try {
-      return ok(await api("POST", "/transactions", { ...rest, amount: toMilli(amount) }));
+      return ok(await api(resolveKey(plan), "POST", "/transactions", { ...rest, amount: toMilli(amount) }));
     } catch (e) { return fail(e); }
   }
 );
@@ -220,13 +285,14 @@ server.registerTool(
       payee: z.string().optional(),
       note: z.string().optional(),
       date: z.string().optional(),
+      ...planParam,
     },
   },
-  async ({ id, amount, ...rest }) => {
+  async ({ plan, id, amount, ...rest }) => {
     try {
       const body = { ...rest };
       if (amount !== undefined) body.amount = toMilli(amount);
-      return ok(await api("PATCH", `/transactions/${id}`, body));
+      return ok(await api(resolveKey(plan), "PATCH", `/transactions/${id}`, body));
     } catch (e) { return fail(e); }
   }
 );
@@ -236,11 +302,11 @@ server.registerTool(
   {
     title: "Borrar transacción",
     description: "Borra una transacción por su id.",
-    inputSchema: { id: z.string() },
+    inputSchema: { id: z.string(), ...planParam },
   },
-  async ({ id }) => {
+  async ({ plan, id }) => {
     try {
-      return ok(await api("DELETE", `/transactions/${id}`));
+      return ok(await api(resolveKey(plan), "DELETE", `/transactions/${id}`));
     } catch (e) { return fail(e); }
   }
 );
@@ -254,11 +320,12 @@ server.registerTool(
       name: z.string(),
       icon: z.string().optional().describe("Emoji, ej. 🐶"),
       sortOrder: z.number().int().optional(),
+      ...planParam,
     },
   },
-  async (args) => {
+  async ({ plan, ...args }) => {
     try {
-      return ok(await api("POST", "/categories", args));
+      return ok(await api(resolveKey(plan), "POST", "/categories", args));
     } catch (e) { return fail(e); }
   }
 );
@@ -272,11 +339,12 @@ server.registerTool(
       month: z.string().describe("Mes YYYY-MM"),
       categoryId: z.string(),
       assigned: z.number().nonnegative().describe("Monto a asignar, ej. 5000"),
+      ...planParam,
     },
   },
-  async ({ month, categoryId, assigned }) => {
+  async ({ plan, month, categoryId, assigned }) => {
     try {
-      return ok(await api("PUT", "/budgets", { month, categoryId, assigned: toMilli(assigned) }));
+      return ok(await api(resolveKey(plan), "PUT", "/budgets", { month, categoryId, assigned: toMilli(assigned) }));
     } catch (e) { return fail(e); }
   }
 );
@@ -286,7 +354,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`Zentavo MCP listo · base ${BASE_URL}`);
+  console.error(`Zentavo MCP listo · base ${BASE_URL} · planes: ${PLAN_NAMES.join(", ")}`);
 }
 
 main().catch((e) => {
