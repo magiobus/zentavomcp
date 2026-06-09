@@ -1,0 +1,30 @@
+{
+  "name": "@zentavo/mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Zentavo — manage your personal finances from Claude/ChatGPT via the Zentavo API",
+  "type": "module",
+  "bin": {
+    "zentavo-mcp": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magiobus/zentavomcp.git"
+  },
+  "homepage": "https://github.com/magiobus/zentavomcp#readme",
+  "bugs": "https://github.com/magiobus/zentavomcp/issues"
+}
