@@ -131,7 +131,7 @@ function qs(params) {
 
 /* ─── Server ─── */
 
-const server = new McpServer({ name: "zentavo", version: "1.2.0" });
+const server = new McpServer({ name: "zentavo", version: "1.3.0" });
 
 server.registerTool(
   "list_plans",
@@ -250,11 +250,12 @@ server.registerTool(
   {
     title: "Crear transacción",
     description:
-      "Registra un gasto, ingreso o transferencia. El monto va en la moneda de la cuenta (ej. 45.50), se convierte solo. Para gasto necesitas categoryId; para transferencia, transferAccountId.",
+      "Registra un gasto, ingreso o transferencia. Si el monto está en una divisa diferente a la de la cuenta (ej. pagas $300 MXN con una cuenta USD), pasa spentCurrency='MXN' — el servidor convierte automáticamente. Sin spentCurrency, el monto va directo en la moneda de la cuenta. Para gasto necesitas categoryId; para transferencia, transferAccountId.",
     inputSchema: {
       type: z.enum(["expense", "income", "transfer"]),
       accountId: z.string().describe("Cuenta origen"),
-      amount: z.number().positive().describe("Monto en la moneda de la cuenta, ej. 45.50"),
+      amount: z.number().positive().describe("Monto del gasto. Si spentCurrency está definido, en esa divisa; si no, en la moneda de la cuenta."),
+      spentCurrency: z.string().optional().describe("Divisa del monto si difiere de la cuenta, ej. 'MXN' para una cuenta USD. El servidor calcula el equivalente en la moneda de la cuenta."),
       categoryId: z.string().optional().describe("Requerido para gastos"),
       transferAccountId: z.string().optional().describe("Cuenta destino, requerido para transferencias"),
       payee: z.string().optional().describe("Negocio o quién pagó"),
@@ -263,9 +264,17 @@ server.registerTool(
       ...planParam,
     },
   },
-  async ({ plan, amount, ...rest }) => {
+  async ({ plan, amount, spentCurrency, ...rest }) => {
     try {
-      return ok(await api(resolveKey(plan), "POST", "/transactions", { ...rest, amount: toMilli(amount) }));
+      const body = { ...rest };
+      if (spentCurrency) {
+        body.spentCurrency = spentCurrency.toUpperCase();
+        body.spentAmount = toMilli(amount);
+        body.amount = 0;
+      } else {
+        body.amount = toMilli(amount);
+      }
+      return ok(await api(resolveKey(plan), "POST", "/transactions", body));
     } catch (e) { return fail(e); }
   }
 );
@@ -296,12 +305,13 @@ server.registerTool(
   "update_transaction",
   {
     title: "Editar transacción",
-    description: "Actualiza solo los campos que envíes de una transacción existente. El monto va en la moneda de la cuenta.",
+    description: "Actualiza solo los campos que envíes de una transacción existente. Si el monto es en divisa diferente a la de la cuenta, pasa también spentCurrency.",
     inputSchema: {
       id: z.string(),
       type: z.enum(["expense", "income", "transfer"]).optional(),
       accountId: z.string().optional(),
-      amount: z.number().positive().optional().describe("Monto en la moneda de la cuenta, ej. 52.00"),
+      amount: z.number().positive().optional().describe("Monto. Si spentCurrency está definido, en esa divisa; si no, en la moneda de la cuenta."),
+      spentCurrency: z.string().optional().describe("Divisa del monto si difiere de la cuenta, ej. 'MXN' para una cuenta USD."),
       categoryId: z.string().optional(),
       transferAccountId: z.string().optional(),
       payee: z.string().optional(),
@@ -310,10 +320,16 @@ server.registerTool(
       ...planParam,
     },
   },
-  async ({ plan, id, amount, ...rest }) => {
+  async ({ plan, id, amount, spentCurrency, ...rest }) => {
     try {
       const body = { ...rest };
-      if (amount !== undefined) body.amount = toMilli(amount);
+      if (spentCurrency && amount !== undefined) {
+        body.spentCurrency = spentCurrency.toUpperCase();
+        body.spentAmount = toMilli(amount);
+        body.amount = 0;
+      } else if (amount !== undefined) {
+        body.amount = toMilli(amount);
+      }
       return ok(await api(resolveKey(plan), "PATCH", `/transactions/${id}`, body));
     } catch (e) { return fail(e); }
   }
