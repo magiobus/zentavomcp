@@ -68,14 +68,27 @@ Reinicia el cliente y ya puedes pedirle cosas como *"¿cuánto gasté este mes?"
 
 ## Herramientas
 
-- **Planes:** `list_plans` (ver los planes configurados).
-- **Lectura** (key con scope `read`): `list_accounts`, `list_transactions`, `get_transaction`, `list_categories`, `list_budgets`, `get_summary`.
-- **Escritura** (key con scope `write`): `create_transaction`, `update_transaction`, `delete_transaction`, `create_category`, `assign_budget`.
+- **Planes:** `list_plans` (ver los planes configurados en esta conexión, con su moneda base).
+- **Lectura** (key con scope `read`): `list_accounts` (con `withBalances` opcional), `list_transactions` (con paginación `before`/`hasMore`), `get_transaction`, `list_categories`, `get_category`, `list_budgets`, `get_summary`, `list_loans`, `get_networth_history`.
+- **Escritura** (key con scope `write`): `create_transaction`, `update_transaction`, `delete_transaction`, `create_category`, `update_category`, `delete_category`, `assign_budget`, `create_loan`, `create_account`, `update_account`.
 
-Los montos van en la moneda de la cuenta como decimal (ej. `45.50`); el server los convierte a milliunits para la API.
+Los montos van como decimal (ej. `45.50`); el server los convierte a milliunits para la API. Si el monto está en una divisa distinta a la de la cuenta, pasa `spentCurrency` (ej. `"MXN"` pagando con cuenta USD) y el servidor convierte con el tipo de cambio del día. Las **respuestas** de la API traen los montos en milliunits (`1000 = $1.00`).
+
+### Préstamos
+
+`create_loan` con `direction: "lend"` registra que prestaste; con `"borrow"` que te prestaron **o que te abonaron un préstamo existente** (mismo `contactName`). `list_loans` da el saldo por contacto: positivo = te deben, negativo = debes.
+
+## Probar con MCP Inspector
+
+```bash
+ZENTAVO_API_KEY=zsk_live_... npx @modelcontextprotocol/inspector node index.js
+```
+
+Con `ZENTAVO_BASE_URL=http://localhost:3000/api/v1` puedes apuntar a un server local.
 
 ## Notas
 
 - Si una key pierde acceso (suscripción vencida o te sacan del plan), sus herramientas devuelven error — las demás siguen.
-- Una key `read` que intente escribir recibe 403.
+- Una key `read` que intente escribir recibe `HTTP 403` (el error incluye el status para que el modelo lo explique).
+- La API tiene rate limit (~300 req/min por key); al excederlo verás `HTTP 429`.
 - Docs de la API: `https://zentavo.lat/docs`.
